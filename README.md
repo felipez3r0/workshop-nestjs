@@ -153,3 +153,91 @@ findAll() {
 ```
 
 Com isso já é possível criar usuários e listar usuários (lembrando que não temos tratamento de erros e validações até aqui).
+
+## Validação de Dados
+
+Vamos instalar o pacote class-validator para fazer a validação dos dados.
+
+```bash
+npm i class-validator class-transformer
+```
+
+Para a validação vamos utilizar o ValidationPipe do NestJS. Vamos configurar o ValidationPipe no main.ts
+
+```typescript
+import { ValidationPipe } from '@nestjs/common';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(new ValidationPipe({
+    transform: true, // transforma os dados de entrada para o tipo correto
+    whitelist: true, // remove campos que não estão no DTO
+    forbidNonWhitelisted: true, // retorna erro se tiver campos que não estão no DTO
+  }));
+  await app.listen(3000);
+}
+
+bootstrap();
+```
+
+Agora vamos ajustar o DTO de criação de usuário em src/users/dto/create-user.dto.ts
+
+```typescript
+import { IsEmail, IsNotEmpty } from 'class-validator';
+
+export class CreateUserDto {
+  @IsNotEmpty({ message: 'Nome é obrigatório' })
+  name: string;
+
+  @IsEmail({}, { message: 'E-mail inválido' })
+  email: string;
+}
+```
+
+Com essa configuração o NestJS vai validar os dados de entrada antes de chamar o método create do serviço de usuários.
+
+## Implementando o update e delete
+
+Vamos implementar o update e o delete no nosso serviço de usuários em src/users/users.service.ts
+
+```typescript
+  async update(id: number, updateUserDto: UpdateUserDto) {
+    const user = await this.usersRepository.findOneBy({ id });
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado');
+    }
+    this.usersRepository.merge(user, updateUserDto);
+    return this.usersRepository.save(user);
+  }
+
+  async remove(id: number) {
+    const user = await this.usersRepository.findOneBy({ id });
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado');
+    }
+    return this.usersRepository.remove(user);
+  }
+```
+
+Vamos criar o DTO de atualização de usuário em src/users/dto/update-user.dto.ts
+
+```typescript
+import { PartialType } from '@nestjs/mapped-types'; // importar o PartialType para criar um DTO parcial
+import { CreateUserDto } from './create-user.dto';
+
+export class UpdateUserDto extends PartialType(CreateUserDto) {} 
+```
+
+Vamos conferir o controlador de usuários em src/users/users.controller.ts e caso necessário ajustar o método update e remove.
+
+```typescript
+@Put(':id')
+update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
+  return this.usersService.update(+id, updateUserDto);
+}
+
+@Delete(':id')
+remove(@Param('id') id: string) {
+  return this.usersService.remove(+id);
+}
+```
