@@ -241,3 +241,339 @@ remove(@Param('id') id: string) {
   return this.usersService.remove(+id);
 }
 ```
+
+## Criando uma entidade de produtos e pedidos
+
+Vamos criar uma entidade de produtos para exemplificar o relacionamento entre entidades.
+
+```bash
+nest g resource products --no-spec
+# escolher a opção REST API e o CRUD entry points como Y
+nest g resource orders --no-spec
+# escolher a opção REST API e o CRUD entry points como n
+```
+
+Vamos ajustar a entidade de produtos em src/products/product.entity.ts
+
+```typescript
+import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
+
+@Entity()
+export class Product {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column()
+  name: string;
+
+  @Column()
+  price: number;
+}
+```
+
+Vamos aproveitar para configurar a entidade de pedidos em src/orders/entities/order.entity.ts e a entidade de itens do pedido em src/orders/entities/orderitem.entity.ts
+
+```typescript
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  OneToMany,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
+import { OrderItem } from './orderitem.entity';
+import { User } from 'src/users/entities/user.entity';
+
+@Entity()
+export class Order {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column()
+  total: number;
+
+  @Column()
+  userId: number;
+
+  @OneToMany(() => OrderItem, (item) => item.order)
+  items: OrderItem[];
+
+  @ManyToOne(() => User, (user) => user.orders)
+  @JoinColumn({ name: 'userId' })
+  user: User;
+}
+```
+
+```typescript
+import { Product } from 'src/products/entities/product.entity';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
+import { Order } from './order.entity';
+
+@Entity()
+export class OrderItem {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column()
+  quantity: number;
+
+  @Column()
+  price: number;
+
+  @Column()
+  total: number;
+
+  @Column()
+  orderId: number;
+
+  @Column()
+  productId: number;
+
+  @ManyToOne(() => Order, (order) => order.items)
+  @JoinColumn({ name: 'orderId' })
+  order: Order;
+
+  @ManyToOne(() => Product, (product) => product.items)
+  @JoinColumn({ name: 'productId' })
+  product: Product;
+}
+```
+
+Precisamos ajustar a entidade de produtos em src/products/product.entity.ts para que ela tenha um relacionamento com a entidade de itens do pedido.
+
+```typescript
+import { Entity, Column, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
+
+@Entity()
+export class Product {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column()
+  name: string;
+
+  @Column()
+  price: number;
+
+  @OneToMany(() => OrderItem, (item) => item.product)
+  items: OrderItem[];
+}
+```
+
+Vamos adicionar no user.entity.ts um relacionamento com a entidade de pedidos.
+
+```typescript
+  @OneToMany(() => Order, (order) => order.user)
+  orders: Order[];
+```
+
+E no order.entity.ts vamos adicionar o relacionamento com a entidade de usuários.
+
+```typescript
+  @ManyToOne(() => User, (user) => user.orders)
+  user: User;
+```
+
+Vamos iniciar permitindo o cadastro de produtos, para isso vamos ajustar o service de produtos em src/products/products.service.ts
+
+```typescript
+export class ProductsService {
+  constructor(
+    @InjectRepository(Product)
+    private productsRepository: Repository<Product>,
+  ) {}
+
+  create(createProductDto: CreateProductDto) {
+    const product = this.productsRepository.create(createProductDto);
+    return this.productsRepository.save(product);
+  }
+```
+
+Vamos ajustar também o product.module em src/products/products.module.ts
+
+```typescript
+@Module({
+  imports: [TypeOrmModule.forFeature([Product])],
+  controllers: [ProductsController],
+  providers: [ProductsService],
+})
+```
+
+Para lidar com a validação do cadastro de produtos vamos ajustar o DTO em src/products/dto/create-product.dto.ts
+
+```typescript
+import { IsNotEmpty, IsNumber } from 'class-validator';
+
+export class CreateProductDto {
+  @IsNotEmpty({ message: 'Nome é obrigatório' })
+  name: string;
+
+  @IsNumber({}, { message: 'Preço é obrigatório' })
+  price: number;
+}
+```
+
+Agora com o produto e usuário cadastrado podemos criar um pedido. Vamos ajustar o service de pedidos em src/orders/orders.service.ts
+
+```typescript
+export class OrdersService {
+  constructor(
+    @InjectRepository(Order)
+    private ordersRepository: Repository<Order>,
+  ) {}
+
+  create(createOrderDto: CreateOrderDto) {
+    const order = this.ordersRepository.create(createOrderDto);
+    return this.ordersRepository.save(order);
+  }
+```
+
+Vamos ajustar o order.module em src/orders/orders.module.ts
+
+```typescript
+@Module({
+  imports: [TypeOrmModule.forFeature([Order])],
+  controllers: [OrdersController],
+  providers: [OrdersService],
+})
+```
+
+Vamos ajustar os DTOs de criação de pedidos em src/orders/dto/create-order.dto.ts
+
+```typescript
+import { IsNumber, IsArray, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class CreateOrderDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateOrderItemDto)
+  products: CreateOrderItemDto[];
+
+  @IsNumber({}, { message: 'Usuário é obrigatório' })
+  userId: number;
+}
+
+export class CreateOrderItemDto {
+  @IsNumber({}, { message: 'Quantidade é obrigatória' })
+  quantity: number;
+
+  @IsNumber({}, { message: 'Produto é obrigatório' })
+  productId: number;
+}
+```
+
+Agora podemos ajustar o service de pedidos em src/orders/orders.service.ts para que ele crie o pedido e seus itens.
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { In, Repository } from 'typeorm';
+import { Order } from './entities/order.entity';
+import { CreateOrderDto } from './dto/create-order.dto';
+import { Product } from 'src/products/entities/product.entity';
+import { OrderItem } from './entities/orderitem.entity';
+
+@Injectable()
+export class OrdersService {
+  constructor(
+    @InjectRepository(Order)
+    private ordersRepository: Repository<Order>,
+    @InjectRepository(OrderItem)
+    private orderItemsRepository: Repository<OrderItem>,
+    @InjectRepository(Product)
+    private productsRepository: Repository<Product>,
+  ) {}
+
+  async create(createOrderDto: CreateOrderDto) {
+    const products = await this.productsRepository.find({
+      where: {
+        id: In(createOrderDto.products.map((item) => item.productId)),
+      },
+    });
+
+    const total = products.reduce((acc, product) => {
+      const item = createOrderDto.products.find(
+        (p) => p.productId === product.id,
+      );
+      return acc + product.price * item.quantity;
+    }, 0);
+
+    const order = this.ordersRepository.create({
+      total,
+      userId: createOrderDto.userId,
+    });
+
+    await this.ordersRepository.save(order);
+
+    const items = products.map((product) => {
+      const item = createOrderDto.products.find(
+        (p) => p.productId === product.id,
+      );
+      return this.orderItemsRepository.create({
+        quantity: item.quantity,
+        price: product.price,
+        total: product.price * item.quantity,
+        orderId: order.id,
+        productId: product.id,
+      });
+    });
+
+    await this.orderItemsRepository.save(items);
+  }
+}
+```
+
+Vamos ajustar o controlador de pedidos em src/orders/orders.controller.ts
+
+```typescript
+import { Body, Controller, Post } from '@nestjs/common';
+import { OrdersService } from './orders.service';
+import { CreateOrderDto } from './dto/create-order.dto';
+
+@Controller('orders')
+export class OrdersController {
+  constructor(private readonly ordersService: OrdersService) {}
+
+  @Post()
+  create(@Body() createOrderDto: CreateOrderDto) {
+    return this.ordersService.create(createOrderDto);
+  }
+}
+```
+
+E agora precisamos ajustar o orders.module em src/orders/orders.module.ts
+
+```typescript
+@Module({
+  imports: [TypeOrmModule.forFeature([Order, OrderItem, Product])],
+  controllers: [OrdersController],
+  providers: [OrdersService],
+})
+```
+
+Podemos criar agora a rota de listar os pedidos em src/orders/orders.service.ts
+
+```typescript
+findAll() {
+  return this.ordersRepository.find({
+    relations: ['items', 'items.product', 'user'],
+  });
+}
+```
+
+E precisamos ajustar o controlador de pedidos em src/orders/orders.controller.ts
+
+```typescript
+  @Get()
+  findAll() {
+    return this.ordersService.findAll();
+  }
+```
