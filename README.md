@@ -577,3 +577,348 @@ E precisamos ajustar o controlador de pedidos em src/orders/orders.controller.ts
     return this.ordersService.findAll();
   }
 ```
+
+## Autenticação com JWT
+
+Vamos instalar o pacote de autenticação do Nest com JWT.
+
+```bash
+npm i @nestjs/jwt
+```
+
+Para realizar a autenticação vamos criar um module, service e controler de autenticação.
+
+```bash
+nest g module auth
+nest g service auth --no-spec
+nest g controller auth --no-spec
+```
+
+Vamos criar uma função findOneByEmail no nosso service de usuários em src/users/users.service.ts
+
+```typescript
+  findOneByEmail(email: string) {
+    return this.usersRepository.findOneBy({ email });
+  }
+```
+
+Precisamos adicionar ao nosso user uma senha, para isso vamos começar ajustando nossa entidade de usuário em src/users/entities/user.entity.ts
+
+```typescript
+  @Column()
+  password: string;
+```
+
+No cadastro de usuário vamos utilizar a lib bcrypt para criptografar a senha.
+
+```bash
+npm i bcrypt
+```
+
+Vamos ajustar o DTO para incluir a senha em src/users/dto/create-user.dto.ts
+
+```typescript
+import { IsEmail, IsNotEmpty, IsStrongPassword } from 'class-validator';
+
+export class CreateUserDto {
+  @IsNotEmpty({ message: 'Nome é obrigatório' })
+  name: string;
+
+  @IsEmail({}, { message: 'E-mail inválido' })
+  email: string;
+
+  @IsNotEmpty({ message: 'Senha é obrigatória' })
+  @IsStrongPassword(
+    { minLength: 8, minNumbers: 1, minLowercase: 1, minSymbols: 1 }, // configuração da senha forte (opcional)
+    { message: 'Senha fraca' },
+  )
+  password: string;
+}
+```
+
+Vamos ajustar o service de usuários em src/users/users.service.ts para incluir a criptografia da senha.
+
+```typescript
+import * as bcrypt from 'bcrypt';
+
+  async create(createUserDto: CreateUserDto) {
+    const password = await bcrypt.hash(createUserDto.password, 10); // Usamos o bcrypt para a hash da senha
+    const user = this.usersRepository.create({ ...createUserDto, password }); // Passamos a senha criptografada e o restante dos dados
+    return this.usersRepository.save(user);
+  }
+```
+
+Vamos ajustar nosso user module para exportar o service de usuários em src/users/users.module.ts
+
+```typescript
+import { Module } from '@nestjs/common';
+import { UsersService } from './users.service';
+import { UsersController } from './users.controller';
+import { User } from './entities/user.entity';
+import { TypeOrmModule } from '@nestjs/typeorm';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([User])],
+  controllers: [UsersController],
+  providers: [UsersService],
+  exports: [UsersService], // Exportamos o service de usuários, isso permite que outros módulos utilizem o service
+})
+export class UsersModule {}
+```
+
+Vamos ajustar o service de autenticação em src/auth/auth.service.ts
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import * as bcrypt from 'bcrypt';
+import { UsersService } from 'src/users/users.service';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private jwtService: JwtService,
+    private usersService: UsersService,
+  ) {}
+
+  async validateUser(email: string, password: string) {
+    // Buscamos o usuário pelo e-mail
+    const user = await this.usersService.findOneByEmail(email);
+    // Verificamos se o usuário existe e se a senha está correta
+    if (user && bcrypt.compareSync(password, user.password)) {
+      // Se o usuário existe e a senha está correta retornamos o usuário
+      return user;
+    }
+    // Caso contrário retornamos null
+    return null;
+  }
+
+  async login(user: { email: string; id: number }) {
+    // Geramos o token JWT
+    const payload = { email: user.email, id: user.id };
+    return {
+      access_token: this.jwtService.sign(payload),
+    };
+  }
+}
+```
+
+Vamos ajustar o controlador de autenticação em src/auth/auth.controller.ts
+
+```typescript
+import { Body, Controller, Post } from '@nestjs/common';
+import { AuthService } from './auth.service';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Post('login')
+  async login(@Body() body: { email: string; password: string }) {
+    if (!body.email || !body.password) {
+      return { message: 'Informe e-mail e senha para efetuar o login' };
+    }
+    const user = await this.authService.validateUser(body.email, body.password);
+    if (user) {
+      return this.authService.login(user);
+    }
+    return { message: 'Usuário ou senha inválidos' };
+  }
+}
+```
+
+Vamos ajustar o auth.module em src/auth/auth.module.ts
+
+```typescript
+import { Module } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtModule } from '@nestjs/jwt';
+import { UsersModule } from 'src/users/users.module';
+
+@Module({
+  imports: [
+    UsersModule,
+    JwtModule.register({
+      secret: process.env.JWT_SECRET || 'secret', // A chave secreta do JWT
+      signOptions: { expiresIn: '1h' }, // O token expira em 1 hora
+    }),
+  ],
+  controllers: [AuthController],
+  providers: [AuthService],
+})
+export class AuthModule {}
+```
+
+Para utilizar o process.env precisamos instalar o pacote @nestjs/config
+
+```bash
+npm i @nestjs/config
+```
+
+No módulo principal vamos importar o ConfigModule e carregar o arquivo .env
+
+```typescript
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { UsersModule } from './users/users.module';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { config } from './ormconfig';
+import { ProductsModule } from './products/products.module';
+import { OrdersModule } from './orders/orders.module';
+import { AuthModule } from './auth/auth.module';
+import { ConfigModule } from '@nestjs/config';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }), // Carregamos o arquivo .env usando o ConfigModule
+    TypeOrmModule.forRoot(config),
+    UsersModule,
+    ProductsModule,
+    OrdersModule,
+    AuthModule,
+  ],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
+```
+
+Criamos um arquivo .env com a chave JWT_SECRET
+
+```env
+JWT_SECRET=chave-secreta
+```
+
+Agora podemos testar a autenticação com o endpoint POST /auth/login - para garantir que o campo novo password não quebre nenhum registro existente podemos remover o banco de dados e deixar o TypeORM criar um novo banco.
+
+Agora vamos implementar um auth.guard para proteger as rotas que precisam de autenticação.
+
+```bash
+nest g guard auth --no-spec
+```
+
+Vamos ajustar o guard em src/auth/auth.guard.ts
+
+```typescript
+import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+  constructor(private jwtService: JwtService) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const request = context.switchToHttp().getRequest();
+    const token = request.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return false;
+    }
+    try {
+      const payload = this.jwtService.verify(token);
+      request.user = payload;
+      return true;
+    } catch (error) {
+      console.log(error);
+      return false;
+    }
+  }
+}
+```
+
+Vamos ajustar o auth.module em src/auth/auth.module.ts para exportar o guard
+
+```typescript
+import { Module } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtModule } from '@nestjs/jwt';
+import { UsersModule } from 'src/users/users.module';
+import { AuthGuard } from './auth.guard';
+
+@Module({
+  imports: [
+    UsersModule,
+    JwtModule.register({
+      secret: process.env.JWT_SECRET || 'secret',
+      signOptions: { expiresIn: '1h' },
+    }),
+  ],
+  controllers: [AuthController],
+  providers: [AuthService],
+  exports: [AuthGuard],
+})
+export class AuthModule {}
+```
+
+Vamos ajustar o controlador de usuários em src/users/users.controller.ts para proteger as rotas de usuários
+
+```typescript
+import { Controller, Get, Post, Body, Put, Param, Delete, UseGuards } from '@nestjs/common';
+import { UsersService } from './users.service';
+import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { AuthGuard } from 'src/auth/auth.guard';
+
+@Controller('users')
+export class UsersController {
+  constructor(private readonly usersService: UsersService) {}
+
+  @Post()
+  create(@Body() createUserDto: CreateUserDto) {
+    return this.usersService.create(createUserDto);
+  }
+
+  @Get()
+  @UseGuards(AuthGuard) // Protegemos a rota de listagem de usuários
+  findAll() {
+    return this.usersService.findAll();
+  }
+
+  @Get(':id')
+  @UseGuards(AuthGuard) // Protegemos a rota de busca de usuário
+  findOne(@Param('id') id: string) {
+    return this.usersService.findOne(+id);
+  }
+
+  @Put(':id')
+  @UseGuards(AuthGuard) // Protegemos a rota de atualização de usuário
+  update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
+    return this.usersService.update(+id, updateUserDto);
+  }
+
+  @Delete(':id')
+  @UseGuards(AuthGuard) // Protegemos a rota de remoção de usuário
+  remove(@Param('id') id: string) {
+    return this.usersService.remove(+id);
+  }
+}
+```
+
+Vamos ajustar o user module para importar o JWTModule em src/users/users.module.ts
+
+```typescript
+import { Module } from '@nestjs/common';
+import { UsersService } from './users.service';
+import { UsersController } from './users.controller';
+import { User } from './entities/user.entity';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { JwtModule } from '@nestjs/jwt';
+
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([User]),
+    JwtModule.register({
+      secret: process.env.JWT_SECRET || 'secret',
+      signOptions: { expiresIn: '1h' },
+    }),
+  ],
+  controllers: [UsersController],
+  providers: [UsersService],
+  exports: [UsersService],
+})
+export class UsersModule {}
+```
+
+Agora podemos chamar o endpoint POST /auth/login para obter o token JWT e usar o token para acessar as rotas protegidas.
