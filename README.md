@@ -1068,3 +1068,13 @@ describe('UsersService', () => {
   });
 });
 ```
+
+## Ajuste de Cors para Deploy no Render
+
+Para que seja possível acessar a aplicação e evitar que um erro de CORS seja exibido nas requisições podemos configurar a aplicação para aceitar as requisições de outros endereços
+
+Vamos ajustar o arquivo main.ts e modificar a seguinte linha:
+
+```typescript
+const app = await NestFactory.create(AppModule, {cors: true});
+```
